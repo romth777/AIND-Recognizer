@@ -75,10 +75,21 @@ class SelectorBIC(ModelSelector):
         :return: GaussianHMM object
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
-
+        num_feature = self.X.shape[1]
+        best_score = float('inf')
+        best_model = None
+        for num_components in range(self.min_n_components,self.max_n_components):
+            try:
+                model = GaussianHMM(n_components=num_components, n_iter=1000).fit(self.X, self.lengths)
+                logL = model.score(self.X, self.lengths)
+                p = num_components * (num_components - 1) + 2 * num_components * num_feature
+                score = -2 * logL + p * np.log(len(self.X))
+            except:
+                score = float("inf")
+            if score < best_score:
+                best_score = score
+                best_model = model
+        return best_model
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
@@ -92,8 +103,32 @@ class SelectorDIC(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        best_hmm_model = None
+        best_score = float("-inf")
+
+        for nb_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                hmm_model = GaussianHMM(n_components=nb_components, covariance_type="diag", n_iter=1000,
+                                        random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+                logL = hmm_model.score(self.X, self.lengths)
+            except:
+                best_score = float("-inf")
+                best_hmm_model = None
+            logL_other = []
+            for word in self.words:
+                if word != self.this_word:
+                    X, lengths = self.hwords[word]
+                    try:
+                        logL_other.append(hmm_model.score(X, lengths))
+                    except:
+                        logL_other.append(float("-inf"))
+            score = logL - np.mean(logL_other)
+
+            if score > best_score:
+                best_score = score
+                best_hmm_model = hmm_model
+
+        return best_hmm_model
 
 
 class SelectorCV(ModelSelector):
@@ -104,5 +139,43 @@ class SelectorCV(ModelSelector):
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        # model selection using CV
+        n_splits = min(3, len(self.lengths))
+        max_mean_logL = -1000000
+        best_hidden_state = 0
+        for nb_hidden_state in range(self.min_n_components, self.max_n_components+1):
+            #print('nb_hidden_state', nb_hidden_state)
+            sum_log = 0
+            n_splits_done = 0
+            mean_logL = -1000000
+            if n_splits == 1 :
+                try :
+                    hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
+                                            random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+                    mean_logL = hmm_model.score(self.X, self.lengths)
+                except:
+                    continue
+
+            else :
+                split_method = KFold(n_splits=n_splits)
+                for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                    X_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
+                    try:
+                        model, logL =  self.selected_model(nb_hidden_state, X_train, lengths_train)
+                        sum_log += logL
+                        n_splits_done += 1
+                    except:
+                        continue
+                if n_splits_done != 0 :
+                    mean_logL = sum_log / float(n_splits_done)
+                else:
+                    mean_logL = -1000000
+            #print('mean_logL', mean_logL)
+            if(mean_logL> max_mean_logL):
+                max_mean_logL = mean_logL
+                best_hidden_state = nb_hidden_state
+        #print('max_mean_logL', max_mean_logL)
+        if best_hidden_state == 0:
+            return self.base_model(self.n_constant)
+        else:
+            return self.base_model(best_hidden_state)
